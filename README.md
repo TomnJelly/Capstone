@@ -2,13 +2,13 @@
 
 현미경으로 찍은 비커스(◆) 압흔 사진에서 **마스크**를 찾고, 마스크 끝점으로 **네 꼭짓점**을 뽑습니다.
 
-Flutter 앱과는 별도입니다. 잘 나왔던 **초반 방식**입니다: 1채널 3단 U-Net, 256px, 꼭짓점은 마스크 N/E/S/W.
+ 1채널 3단 U-Net, 256px, 꼭짓점은 마스크 N/E/S/W.
 
 ---
 
-## 팀원이 할 일
+## 로직
 
-1. 이 저장소는 **비공개**입니다. 초대받은 뒤 클론하세요.
+1. 초대받은 뒤 클론하세요.
 2. Jalilian `Vicker_Database`를 각자 PC(또는 Kaggle Input)에 둡니다.
 3. 학습은 Kaggle **GPU (T4)** 에서 합니다.
 4. `/kaggle/working/best.pt`를 `weights/best.pt`에 넣고 `preview.py`로 확인합니다.
