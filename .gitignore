@@ -1,6 +1,3 @@
-preview/samples/
-preview/uvc_sim/
-preview/index.html
 __pycache__/
 .venv/
 venv/
@@ -8,6 +5,7 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+preview/
 weights/*
 !weights/.gitkeep
 !weights/best.pt

@@ -29,11 +29,10 @@ from common import (  # noqa: E402
     db_dirs,
     diagonals_px,
     draw_geometry,
-    load_expert_vertices,
     load_gray,
     load_mask,
     overlay_mask,
-    predict_indent,
+    predict_mask,
     vertices_from_mask,
 )
 
@@ -41,7 +40,7 @@ STEPS_GT = [
     ("01_input.png", "1. 입력 이미지", "시험기 현미경 흑백 사진. 모델의 입력입니다."),
     ("02_gt_mask.png", "2. 정답 마스크", "사람이 칠한 압흔 영역. 학습 타깃입니다."),
     ("03_gt_overlay.png", "3. 입력 + 정답", "초록이 정답 압흔입니다."),
-    ("04_gt_geom.png", "4. 정답 기하", "시리즈 1 측정선에서 뽑은 N/E/S/W와 대각선."),
+    ("04_gt_geom.png", "4. 정답 기하", "정답 마스크에서 뽑은 N/E/S/W와 대각선."),
 ]
 
 STEPS_PRED = [
@@ -78,28 +77,25 @@ def pick_ids(root: Path, split: str, n: int) -> list[str]:
 
 def load_model(ckpt_path: Path, device: torch.device) -> tuple[nn.Module, int, str, dict]:
     blob = torch.load(ckpt_path, map_location=device, weights_only=False)
-    size = int(blob.get("size", 384))
+    size = int(blob.get("size", 256))
     out_ch = int(blob["model"]["out.weight"].shape[0])
-    arch = blob.get("arch")
-    if arch != "unet4_heat5" and out_ch != 5:
+    if out_ch != 1:
         raise SystemExit(
-            f"{ckpt_path} 는 지금 코드와 다른 가중치입니다 "
-            f"(arch={arch!r}, out_ch={out_ch}, size={size}).\n"
-            "kaggle_cell.py / train.py 로 학습한 unet4_heat5 (5채널, 384) best.pt 를 넣으세요."
+            f"{ckpt_path} 는 1채널 마스크 모델이 아닙니다 (out_ch={out_ch}). "
+            "지금 코드는 초반과 같은 unet1_mask256 만 엽니다."
         )
-    model: nn.Module = UNet(base=32, out_ch=5)
+    model: nn.Module = UNet(base=32)
     model = model.to(device)
     model.load_state_dict(blob["model"])
     model.eval()
     meta = {
         "epoch": blob.get("epoch"),
         "val_dice": blob.get("val_dice"),
-        "val_diag": blob.get("val_diag"),
-        "arch": "unet4_heat5",
+        "arch": blob.get("arch") or "unet1_mask256",
         "size": size,
-        "kind": "heat5",
+        "kind": "mask1",
     }
-    return model, size, "heat5", meta
+    return model, size, "mask1", meta
 
 
 def mask_dice(pred: np.ndarray, gt: np.ndarray) -> float:
@@ -419,8 +415,8 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = None
-    size = 384
-    kind = "heat5"
+    size = 256
+    kind = "mask1"
     meta: dict | None = None
     if args.ckpt and args.ckpt.exists():
         model, size, kind, meta = load_model(args.ckpt, device)
@@ -434,7 +430,6 @@ def main() -> None:
 
     ids = pick_ids(args.data, args.split, args.samples)
     img_dir, mask_dir = db_dirs(args.data, args.split)
-    expert = load_expert_vertices(args.data, args.split)
     items: list[dict] = []
     for stem in ids:
         gray = load_gray(img_dir / f"{stem}.png")
@@ -442,11 +437,10 @@ def main() -> None:
         pred = None
         pred_verts = None
         if model is not None:
-            pred, pred_verts = predict_indent(model, gray, size, device)
-        gt_verts = expert.get(stem)
-        if pred is not None and pred_verts is None:
+            pred = predict_mask(model, gray, size, device)
             pred_verts = vertices_from_mask(pred)
-        metrics = sample_metrics(gt, pred, gt_verts if gt_verts else vertices_from_mask(gt), pred_verts)
+        gt_verts = vertices_from_mask(gt)
+        metrics = sample_metrics(gt, pred, gt_verts, pred_verts)
         dest = args.out / "samples" / stem
         save_steps(
             stem,
