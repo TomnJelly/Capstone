@@ -2,7 +2,9 @@
 
 현미경으로 찍은 비커스(◆) 압흔 사진에서 **압흔 영역**과 **네 꼭짓점**을 찾고, 대각선 길이로 경도를 계산하기 위한 학습 코드입니다.
 
-Flutter 앱(`flutter_application_3`)과는 별도입니다. 이 저장소는 **학습·검증**만 담당하고, 완성된 가중치(`.pt`)는 넣지 않습니다.
+Flutter 앱(`flutter_application_3`)과는 별도입니다. 이 저장소는 학습·검증용입니다.
+
+팀에서 쓸 가중치는 `weights/best.pt`입니다. **지금 코드와 같은 구조로 Kaggle에서 새로 뽑은 파일**만 넣습니다. (5채널, 384px, `unet4_heat5`)
 
 ---
 
@@ -10,8 +12,8 @@ Flutter 앱(`flutter_application_3`)과는 별도입니다. 이 저장소는 **�
 
 1. 이 저장소는 **비공개**입니다. 초대받은 뒤 클론하세요.
 2. Jalilian `Vicker_Database`를 각자 PC(또는 Kaggle Input)에 둡니다. 데이터는 용량·배포 조건 때문에 GitHub에 없습니다.
-3. **학습은 Kaggle GPU**에서 합니다. 로컬은 미리보기용입니다.
-4. Kaggle이 만든 `best.pt`를 `weights/best.pt`에 넣고, `preview.py`로 결과를 확인합니다.
+3. **학습은 Kaggle TPU**에서 합니다. 로컬은 미리보기용입니다.
+4. 학습이 끝나면 `/kaggle/working/best.pt`를 받아 `weights/best.pt`에 두고, `preview.py`로 확인합니다.
 
 ```bash
 git clone https://github.com/TomnJelly/Capstone.git
@@ -47,14 +49,23 @@ Vicker_Database/
 
 ---
 
-## 학습 (Kaggle, 권장)
+## 학습 (Kaggle TPU)
 
-GPU가 필요합니다. 노트북 한 칸에 `kaggle_cell.py` **파일 전체**를 붙여 넣으면 됩니다.
+노트북 한 칸에 `kaggle_cell.py` **파일 전체**를 붙여 넣으면 됩니다.
 
-1. 새 Kaggle Notebook을 만들고 GPU를 켭니다.
+1. 새 Kaggle Notebook에서 오른쪽 **Accelerator = TPU** 로 둡니다.
 2. `Vicker_Database`를 **Add Input** 합니다. 위에 적은 폴더가 Input 안에 있어야 합니다.
 3. `kaggle_cell.py`를 셀 하나에 그대로 붙여 넣고 실행합니다.
-4. 끝나면 `/kaggle/working/best.pt`를 받아, 이 저장소의 `weights/best.pt`로 복사합니다.
+4. 로그에 `kind = tpu` 가 보여야 합니다. `kind = cpu` 이면 TPU를 못 쓴 것입니다.
+5. 끝나면 `/kaggle/working/best.pt`를 받아 `weights/best.pt`로 복사합니다.
+
+TPU에서 PyTorch는 `torch_xla`가 필요합니다. import 에러가 나면 그 위에 한 셀을 추가하세요.
+
+```
+%pip install -q torch_xla
+```
+
+코드는 TPU → GPU → CPU 순으로 찾습니다. GPU 노트북이어도 돌아갑니다.
 
 설정은 코드와 같아야 합니다.
 
@@ -88,7 +99,7 @@ python -m http.server 8766 --directory preview
 python train.py --data "C:\path\to\Vicker_Database"
 ```
 
-CPU에서는 매우 느립니다. 팀 모델은 Kaggle에서 나온 `best.pt`를 씁니다.
+CPU에서는 매우 느립니다. 팀 모델은 Kaggle TPU에서 나온 `best.pt`를 씁니다.
 
 ---
 
@@ -101,7 +112,7 @@ CPU에서는 매우 느립니다. 팀 모델은 Kaggle에서 나온 `best.pt`를
 | `train.py` | 로컬에서 돌릴 때. `common.py`를 씀 |
 | `preview.py` | 결과 HTML |
 | `requirements.txt` | Python 패키지 |
-| `weights/` | `best.pt`를 두는 곳. Git에는 올리지 않음 |
+| `weights/best.pt` | 팀 모델. 지금 코드와 같은 구조여야 함 |
 
 `train.py`와 `kaggle_cell.py`의 모델·정답·설정은 같아야 합니다. 학습 코드를 고치면 **둘 다** 맞추고, Kaggle 셀도 다시 붙여 넣으세요.
 

@@ -6,6 +6,7 @@ Kaggle 학습용. 이 파일 전체를 노트북 한 셀에 붙여 넣으세요.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -34,6 +35,28 @@ def find_data_root() -> Path:
 
 Vertex = tuple[float, float]
 CORNERS = ("N", "E", "S", "W")
+
+
+def pick_accelerator() -> tuple[torch.device, str, object | None]:
+    """TPU(torch_xla) → GPU → CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda"), "cuda", None
+    tpu_env = (
+        os.environ.get("PJRT_DEVICE", "").upper() == "TPU"
+        or bool(os.environ.get("TPU_NAME"))
+        or Path("/dev/accel0").exists()
+    )
+    if tpu_env:
+        os.environ.setdefault("PJRT_DEVICE", "TPU")
+        try:
+            import torch_xla.core.xla_model as xm  # type: ignore
+        except ImportError as err:
+            raise SystemExit(
+                "이 노트북은 TPU입니다. PyTorch는 torch_xla가 필요합니다.\n"
+                "맨 위 셀에서 `%pip install -q torch_xla` 를 실행하세요."
+            ) from err
+        return xm.xla_device(), "tpu", xm
+    return torch.device("cpu"), "cpu", None
 
 
 def db_dirs(root: Path, split: str) -> tuple[Path, Path]:
@@ -493,19 +516,56 @@ def draw_geometry(gray: np.ndarray, verts: dict[str, Vertex] | None, color: tupl
     return vis
 
 
+def _optimizer_step(loss, opt, model, kind: str, xm, scaler) -> None:
+    if kind == "cuda":
+        scaler.scale(loss).backward()
+        scaler.unscale_(opt)
+        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(opt)
+        scaler.update()
+        return
+    loss.backward()
+    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    if kind == "tpu":
+        xm.optimizer_step(opt)
+    else:
+        opt.step()
+
+
+def _save_ckpt(path: Path, model: nn.Module, extra: dict, kind: str, xm) -> None:
+    blob = {
+        "model": {k: v.detach().to("cpu") for k, v in model.state_dict().items()},
+        **extra,
+    }
+    if kind == "tpu":
+        xm.save(blob, str(path))
+    else:
+        torch.save(blob, path)
+
+
 def main() -> None:
     data = find_data_root()
     out = Path("/kaggle/working") if Path("/kaggle/working").exists() else Path("weights")
     out.mkdir(parents=True, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch = 8 if device.type == "cuda" else 4
-    use_amp = device.type == "cuda"
+    device, kind, xm = pick_accelerator()
+    if kind == "cpu" and Path("/kaggle").exists():
+        print(
+            "경고: CPU로 학습합니다. Kaggle 오른쪽 Accelerator가 TPU(또는 GPU)인지 확인하세요.",
+            flush=True,
+        )
+    batch = 8 if kind in ("tpu", "cuda") else 4
+    use_amp = kind == "cuda"
     print("data =", data)
-    print("device =", device, "cuda_name =", torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu")
+    extra = ""
+    if kind == "cuda":
+        extra = torch.cuda.get_device_name(0)
+    elif kind == "tpu":
+        extra = os.environ.get("TPU_NAME") or os.environ.get("PJRT_DEVICE") or "xla"
+    print("device =", device, "kind =", kind, extra)
     train_ds = JalilianDataset(data, "I", size=SIZE, augment=True)
     val_ds = JalilianDataset(data, "II", size=SIZE, augment=False)
     print(f"expert verts train={len(train_ds.expert)}/{len(train_ds)}  val={len(val_ds.expert)}/{len(val_ds)}")
-    nw = 2 if device.type == "cuda" else 0
+    nw = 2 if kind == "cuda" else 0
     train_loader = DataLoader(train_ds, batch_size=batch, shuffle=True, num_workers=nw)
     val_loader = DataLoader(val_ds, batch_size=batch, shuffle=False, num_workers=nw)
     model = UNet(base=32, out_ch=5).to(device)
@@ -522,18 +582,14 @@ def main() -> None:
         running = 0.0
         train_dices = []
         for batch_data in train_loader:
-            x = batch_data["image"].to(device, non_blocking=True)
-            y = batch_data["mask"].to(device, non_blocking=True)
-            heat = batch_data["heat"].to(device, non_blocking=True)
+            x = batch_data["image"].to(device)
+            y = batch_data["mask"].to(device)
+            heat = batch_data["heat"].to(device)
             opt.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=use_amp):
                 logits = model(x)
                 loss = multitask_loss(logits, y, heat)
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
+            _optimizer_step(loss, opt, model, kind, xm, scaler)
             running += float(loss.item()) * x.size(0)
             train_dices.append(dice_score(logits.detach(), y))
         train_loss = running / max(len(train_ds), 1)
@@ -543,8 +599,8 @@ def main() -> None:
         dices, diag_errs = [], []
         with torch.no_grad():
             for batch_data in val_loader:
-                x = batch_data["image"].to(device, non_blocking=True)
-                y = batch_data["mask"].to(device, non_blocking=True)
+                x = batch_data["image"].to(device)
+                y = batch_data["mask"].to(device)
                 with torch.cuda.amp.autocast(enabled=use_amp):
                     logits = model(x)
                 dices.append(dice_score(logits, y))
@@ -563,16 +619,18 @@ def main() -> None:
         if val_dice > best_dice:
             best_dice = val_dice
         if should_save:
-            torch.save(
+            _save_ckpt(
+                out / "best.pt",
+                model,
                 {
-                    "model": model.state_dict(),
                     "size": SIZE,
                     "epoch": epoch,
                     "val_dice": val_dice,
                     "val_diag": val_diag,
                     "arch": "unet4_heat5",
                 },
-                out / "best.pt",
+                kind,
+                xm,
             )
             mark = "  <- saved"
         lr_now = opt.param_groups[0]["lr"]

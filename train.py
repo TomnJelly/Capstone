@@ -19,6 +19,9 @@ from common import (  # noqa: E402
     dice_score,
     mean_diag_error,
     multitask_loss,
+    optimizer_step,
+    pick_accelerator,
+    save_ckpt,
 )
 
 
@@ -36,11 +39,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type != "cuda":
+    device, kind, xm = pick_accelerator()
+    if kind not in ("tpu", "cuda"):
         args.batch = min(args.batch, 4)
     args.out.mkdir(parents=True, exist_ok=True)
-    use_amp = device.type == "cuda"
+    use_amp = kind == "cuda"
 
     train_ds = JalilianDataset(args.data, "I", size=args.size, augment=True)
     val_ds = JalilianDataset(args.data, "II", size=args.size, augment=False)
@@ -55,7 +58,7 @@ def main() -> None:
     sched = torch.optim.lr_scheduler.SequentialLR(opt, [warmup, cosine], milestones=[3])
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     print(
-        f"device={device}  train={len(train_ds)}  val={len(val_ds)}  "
+        f"device={device}  kind={kind}  train={len(train_ds)}  val={len(val_ds)}  "
         f"size={args.size}  batch={args.batch}  lr={args.lr}",
         flush=True,
     )
@@ -68,18 +71,14 @@ def main() -> None:
         running = 0.0
         train_dices = []
         for batch in train_loader:
-            x = batch["image"].to(device, non_blocking=True)
-            y = batch["mask"].to(device, non_blocking=True)
-            heat = batch["heat"].to(device, non_blocking=True)
+            x = batch["image"].to(device)
+            y = batch["mask"].to(device)
+            heat = batch["heat"].to(device)
             opt.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=use_amp):
                 logits = model(x)
                 loss = multitask_loss(logits, y, heat)
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(opt)
-            scaler.update()
+            optimizer_step(loss, opt, model, kind, xm, scaler)
             running += float(loss.item()) * x.size(0)
             train_dices.append(dice_score(logits.detach(), y))
         train_loss = running / max(len(train_ds), 1)
@@ -91,8 +90,8 @@ def main() -> None:
         diag_errs = []
         with torch.no_grad():
             for batch in val_loader:
-                x = batch["image"].to(device, non_blocking=True)
-                y = batch["mask"].to(device, non_blocking=True)
+                x = batch["image"].to(device)
+                y = batch["mask"].to(device)
                 with torch.cuda.amp.autocast(enabled=use_amp):
                     logits = model(x)
                 dices.append(dice_score(logits, y))
@@ -111,16 +110,18 @@ def main() -> None:
         if val_dice > best_dice:
             best_dice = val_dice
         if should_save:
-            torch.save(
+            save_ckpt(
+                args.out / "best.pt",
+                model,
                 {
-                    "model": model.state_dict(),
                     "size": args.size,
                     "epoch": epoch,
                     "val_dice": val_dice,
                     "val_diag": val_diag,
                     "arch": "unet4_heat5",
                 },
-                args.out / "best.pt",
+                kind,
+                xm,
             )
             marker = "  <- saved"
         lr_now = opt.param_groups[0]["lr"]

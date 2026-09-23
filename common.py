@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -13,6 +14,55 @@ from torch.utils.data import Dataset
 
 Vertex = tuple[float, float]
 CORNERS = ("N", "E", "S", "W")
+
+
+def pick_accelerator() -> tuple[torch.device, str, object | None]:
+    """TPU(torch_xla) → GPU → CPU. Kaggle에서 Accelerator를 TPU로 두면 TPU를 씁니다."""
+    if torch.cuda.is_available():
+        return torch.device("cuda"), "cuda", None
+    tpu_env = (
+        os.environ.get("PJRT_DEVICE", "").upper() == "TPU"
+        or bool(os.environ.get("TPU_NAME"))
+        or Path("/dev/accel0").exists()
+    )
+    if tpu_env:
+        os.environ.setdefault("PJRT_DEVICE", "TPU")
+        try:
+            import torch_xla.core.xla_model as xm  # type: ignore
+        except ImportError as err:
+            raise SystemExit(
+                "이 노트북은 TPU입니다. PyTorch는 torch_xla가 필요합니다.\n"
+                "맨 위 셀에서 `%pip install -q torch_xla` 를 실행하세요."
+            ) from err
+        return xm.xla_device(), "tpu", xm
+    return torch.device("cpu"), "cpu", None
+
+
+def optimizer_step(loss, opt, model, kind: str, xm, scaler) -> None:
+    if kind == "cuda":
+        scaler.scale(loss).backward()
+        scaler.unscale_(opt)
+        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(opt)
+        scaler.update()
+        return
+    loss.backward()
+    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    if kind == "tpu":
+        xm.optimizer_step(opt)
+    else:
+        opt.step()
+
+
+def save_ckpt(path: Path, model: nn.Module, extra: dict, kind: str, xm) -> None:
+    blob = {
+        "model": {k: v.detach().to("cpu") for k, v in model.state_dict().items()},
+        **extra,
+    }
+    if kind == "tpu":
+        xm.save(blob, str(path))
+    else:
+        torch.save(blob, path)
 
 
 def db_dirs(root: Path, split: str) -> tuple[Path, Path]:

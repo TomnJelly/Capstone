@@ -1,5 +1,3 @@
-weights/*.pt
-weights/*.pth
 preview/samples/
 preview/uvc_sim/
 preview/index.html
@@ -10,3 +8,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+weights/*
+!weights/.gitkeep
+!weights/best.pt
