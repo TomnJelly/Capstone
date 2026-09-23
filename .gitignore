@@ -1,0 +1,12 @@
+weights/*.pt
+weights/*.pth
+preview/samples/
+preview/uvc_sim/
+preview/index.html
+__pycache__/
+.venv/
+venv/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
