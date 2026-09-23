@@ -6,7 +6,7 @@
 
 ---
 
-## 로직
+## 실행 순서
 
 1. 초대받은 뒤 클론하세요.
 2. Jalilian `Vicker_Database`를 각자 PC(또는 Kaggle Input)에 둡니다.
