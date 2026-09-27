@@ -7,6 +7,7 @@ Kaggle 학습 전용. 이 파일 전체를 노트북 한 셀에 붙여 넣으면
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -31,10 +32,40 @@ def find_data_root() -> Path:
             if (data_root / "DB-I").exists():
                 return data_root
         raise FileNotFoundError("/kaggle/input 아래에 DB-I + exact-masks-I 가 없습니다.")
-    local = Path(r"C:\Users\seoyu\Downloads\Vicker_Database")
-    if local.exists():
-        return local
-    raise FileNotFoundError("Jalilian 데이터 경로를 찾지 못했습니다.")
+
+    def is_root(path: Path) -> bool:
+        return (path / "DB-I").is_dir() and (path / "exact-masks-I").is_dir()
+
+    def check(path: Path) -> Path | None:
+        try:
+            path = path.expanduser().resolve()
+        except OSError:
+            return None
+        if is_root(path):
+            return path
+        nested = path / "Vicker_Database"
+        if is_root(nested):
+            return nested
+        return None
+
+    env = os.environ.get("VICKER_DATABASE")
+    candidates = [
+        Path(env) if env else None,
+        Path.cwd() / "Vicker_Database",
+        Path.home() / "Downloads" / "Vicker_Database",
+        Path.home() / "Download" / "Vicker_Database",
+        Path.home() / "Documents" / "Vicker_Database",
+    ]
+    for raw in candidates:
+        if raw is None:
+            continue
+        found = check(raw)
+        if found is not None:
+            return found
+    raise FileNotFoundError(
+        "Jalilian 데이터 경로를 찾지 못했습니다. "
+        "Kaggle에서는 Vicker_Database 를 Add Input 하세요."
+    )
 
 
 def db_dirs(root: Path, split: str) -> tuple[Path, Path]:

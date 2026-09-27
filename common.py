@@ -21,35 +21,51 @@ def is_vicker_root(path: Path) -> bool:
 
 
 def find_data_root(explicit: Path | None = None) -> Path:
-    """Vicker_Database 위치를 찾는다. 다른 PC에서는 --data 또는 환경변수 VICKER_DATABASE."""
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(Path(explicit))
-    env = os.environ.get("VICKER_DATABASE")
-    if env:
-        candidates.append(Path(env))
-    here = Path(__file__).resolve().parent
-    candidates.extend(
-        [
-            here / "Vicker_Database",
-            here.parent / "Vicker_Database",
-            Path.cwd() / "Vicker_Database",
-            Path.home() / "Downloads" / "Vicker_Database",
-            Path.home() / "Download" / "Vicker_Database",
-            Path(r"C:\Users\seoyu\Downloads\Vicker_Database"),
-        ]
-    )
-    seen: set[Path] = set()
-    for raw in candidates:
+    """Vicker_Database 위치를 찾는다. --data 를 주면 그 경로만 본다."""
+
+    def check(path: Path) -> Path | None:
         try:
-            path = raw.expanduser().resolve()
+            path = path.expanduser().resolve()
         except OSError:
-            continue
-        if path in seen:
-            continue
-        seen.add(path)
+            return None
         if is_vicker_root(path):
             return path
+        nested = path / "Vicker_Database"
+        if is_vicker_root(nested):
+            return nested
+        return None
+
+    if explicit is not None:
+        found = check(Path(explicit))
+        if found is not None:
+            return found
+        raise FileNotFoundError(
+            f"{explicit} 에서 데이터를 찾지 못했습니다.\n"
+            "그 폴더 안에 DB-I 와 exact-masks-I 가 있어야 합니다.\n"
+            '예: python preview.py --data "C:\\Users\\이름\\Downloads\\Vicker_Database"'
+        )
+
+    env = os.environ.get("VICKER_DATABASE")
+    here = Path(__file__).resolve().parent
+    candidates = [
+        Path(env) if env else None,
+        here / "Vicker_Database",
+        here.parent / "Vicker_Database",
+        Path.cwd() / "Vicker_Database",
+        Path.home() / "Downloads" / "Vicker_Database",
+        Path.home() / "Download" / "Vicker_Database",
+        Path.home() / "Documents" / "Vicker_Database",
+        Path(r"C:\Users\seoyu\Downloads\Vicker_Database"),
+    ]
+    seen: set[Path] = set()
+    for raw in candidates:
+        if raw is None:
+            continue
+        found = check(raw)
+        if found is None or found in seen:
+            continue
+        seen.add(found)
+        return found
     raise FileNotFoundError(
         "Vicker_Database 를 찾지 못했습니다. 안에 DB-I 와 exact-masks-I 가 있어야 합니다.\n"
         '실행 예: python preview.py --data "C:\\Users\\이름\\Downloads\\Vicker_Database"'

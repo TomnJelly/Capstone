@@ -412,19 +412,22 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
 
 
 def serve_preview(directory: Path, port: int) -> None:
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(directory), **kwargs)
 
-        def log_message(self, fmt: str, *args) -> None:
+        def log_message(self, format: str, *args) -> None:
             return
 
     httpd = None
     bound = port
     for candidate in range(port, port + 15):
         try:
-            httpd = socketserver.ThreadingTCPServer(("127.0.0.1", candidate), Handler)
-            httpd.allow_reuse_address = True
+            httpd = Server(("127.0.0.1", candidate), Handler)
             bound = candidate
             break
         except OSError:
@@ -435,11 +438,17 @@ def serve_preview(directory: Path, port: int) -> None:
         webbrowser.open(html.resolve().as_uri())
         return
     url = f"http://127.0.0.1:{bound}/"
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    time.sleep(0.3)
     print(f"미리보기 사이트: {url}", flush=True)
     print("브라우저가 안 열리면 위 주소를 주소창에 붙여 넣으세요. 끄려면 Ctrl+C", flush=True)
-    threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    opened = webbrowser.open(url, new=2)
+    if not opened:
+        print("브라우저 자동 실행에 실패했습니다. 주소를 직접 여세요.", flush=True)
     try:
-        httpd.serve_forever()
+        while thread.is_alive():
+            thread.join(timeout=0.5)
     except KeyboardInterrupt:
         print("\n미리보기 종료", flush=True)
         httpd.shutdown()
@@ -466,7 +475,7 @@ def main() -> None:
         print(f"ckpt 없음, 정답만 표시: {args.ckpt}", flush=True)
 
     ids = pick_ids(data, args.split, args.samples)
-    print(f"{len(ids)}장 미리보기 생성 중... (CPU면 몇 분 걸릴 수 있습니다)", flush=True)
+    print(f"{len(ids)}장 미리보기 생성 중... 다 끝난 뒤에 사이트가 열립니다.", flush=True)
     img_dir, mask_dir = db_dirs(data, args.split)
     items: list[dict] = []
     for stem in ids:

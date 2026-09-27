@@ -17,11 +17,9 @@ pip install -r requirements.txt
 python preview.py --data "C:\Users\이름\Downloads\Vicker_Database"
 ```
 
-잠시 기다리면 브라우저가 **http://127.0.0.1:8766/** 로 열립니다. 안 열리면 그 주소를 주소창에 직접 넣으세요. 끄려면 터미널에서 `Ctrl+C`.
+잠시 기다리면 터미널에 `미리보기 사이트: http://127.0.0.1:8766/` 가 뜹니다. 그다음에 브라우저가 열립니다. 안 열리면 그 주소를 주소창에 직접 넣으세요. 끄려면 터미널에서 `Ctrl+C`.
 
-`--data`를 빼도 `Downloads\Vicker_Database` 같은 흔한 위치는 찾아 봅니다. 못 찾으면 위처럼 경로를 적어 주세요.
-
-가중치 `weights/best.pt`는 저장소에 있습니다. 50장을 만들므로 CPU에서는 몇 분 걸릴 수 있습니다.
+가중치 `weights/best.pt`는 저장소에 있습니다. 50장을 만들므로 CPU에서는 몇 분 걸릴 수 있습니다. 그 동안은 사이트가 아직 없습니다.
 
 ---
 
