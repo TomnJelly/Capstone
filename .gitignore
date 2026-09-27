@@ -10,3 +10,9 @@ v1/preview/
 v1/weights/*
 !v1/weights/.gitkeep
 !v1/weights/best.pt
+v2/preview/
+v2/weights/*
+!v2/weights/.gitkeep
+!v2/weights/best_I.pt
+!v2/weights/best_II.pt
+!v2/weights/best.pt
