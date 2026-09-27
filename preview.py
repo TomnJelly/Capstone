@@ -10,8 +10,11 @@
 from __future__ import annotations
 
 import argparse
+import http.server
 import json
+import socketserver
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -29,6 +32,7 @@ from common import (  # noqa: E402
     db_dirs,
     diagonals_px,
     draw_geometry,
+    find_data_root,
     load_gray,
     load_mask,
     overlay_mask,
@@ -54,16 +58,13 @@ OK_MAX = 0.08
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Vickers step-by-step preview")
-    p.add_argument(
-        "--data",
-        type=Path,
-        default=Path(r"C:\Users\seoyu\Downloads\Vicker_Database"),
-    )
+    p.add_argument("--data", type=Path, default=None, help="Vicker_Database 폴더. 생략하면 자동으로 찾습니다.")
     p.add_argument("--out", type=Path, default=ROOT / "preview")
     p.add_argument("--ckpt", type=Path, default=ROOT / "weights" / "best.pt", help="학습된 best.pt")
     p.add_argument("--samples", type=int, default=50)
     p.add_argument("--split", default="I", help="I 또는 II")
     p.add_argument("--no-open", action="store_true")
+    p.add_argument("--port", type=int, default=8766)
     return p.parse_args()
 
 
@@ -410,8 +411,44 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
     (out / "index.html").write_text(html, encoding="utf-8")
 
 
+def serve_preview(directory: Path, port: int) -> None:
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(directory), **kwargs)
+
+        def log_message(self, fmt: str, *args) -> None:
+            return
+
+    httpd = None
+    bound = port
+    for candidate in range(port, port + 15):
+        try:
+            httpd = socketserver.ThreadingTCPServer(("127.0.0.1", candidate), Handler)
+            httpd.allow_reuse_address = True
+            bound = candidate
+            break
+        except OSError:
+            continue
+    html = directory / "index.html"
+    if httpd is None:
+        print(f"포트를 열 수 없습니다. 파일을 직접 엽니다: {html}", flush=True)
+        webbrowser.open(html.resolve().as_uri())
+        return
+    url = f"http://127.0.0.1:{bound}/"
+    print(f"미리보기 사이트: {url}", flush=True)
+    print("브라우저가 안 열리면 위 주소를 주소창에 붙여 넣으세요. 끄려면 Ctrl+C", flush=True)
+    threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n미리보기 종료", flush=True)
+        httpd.shutdown()
+
+
 def main() -> None:
     args = parse_args()
+    data = find_data_root(args.data)
+    print(f"data={data}", flush=True)
     args.out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = None
@@ -428,8 +465,9 @@ def main() -> None:
     elif args.ckpt:
         print(f"ckpt 없음, 정답만 표시: {args.ckpt}", flush=True)
 
-    ids = pick_ids(args.data, args.split, args.samples)
-    img_dir, mask_dir = db_dirs(args.data, args.split)
+    ids = pick_ids(data, args.split, args.samples)
+    print(f"{len(ids)}장 미리보기 생성 중... (CPU면 몇 분 걸릴 수 있습니다)", flush=True)
+    img_dir, mask_dir = db_dirs(data, args.split)
     items: list[dict] = []
     for stem in ids:
         gray = load_gray(img_dir / f"{stem}.png")
@@ -468,9 +506,10 @@ def main() -> None:
     bust = str(int(time.time()))
     write_html(args.out, items, has_model=model is not None, summary=summary, bust=bust)
     html_path = (args.out / "index.html").resolve()
-    print(f"미리보기: {html_path}", flush=True)
-    if not args.no_open:
-        webbrowser.open(html_path.as_uri())
+    print(f"파일: {html_path}", flush=True)
+    if args.no_open:
+        return
+    serve_preview(args.out, args.port)
 
 
 if __name__ == "__main__":

@@ -13,12 +13,12 @@ from torch.utils.data import DataLoader
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from common import JalilianDataset, UNet, bce_dice_loss, dice_score  # noqa: E402
+from common import JalilianDataset, UNet, bce_dice_loss, dice_score, find_data_root  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Vickers indent mask training")
-    p.add_argument("--data", type=Path, default=Path(r"C:\Users\seoyu\Downloads\Vicker_Database"))
+    p.add_argument("--data", type=Path, default=None, help="Vicker_Database 폴더. 생략하면 자동으로 찾습니다.")
     p.add_argument("--out", type=Path, default=ROOT / "weights")
     p.add_argument("--size", type=int, default=256)
     p.add_argument("--epochs", type=int, default=30)
@@ -30,14 +30,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    data = find_data_root(args.data)
+    print(f"data={data}", flush=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         args.batch = min(args.batch, 4)
     args.out.mkdir(parents=True, exist_ok=True)
     use_amp = device.type == "cuda"
 
-    train_ds = JalilianDataset(args.data, "I", size=args.size, augment=True)
-    val_ds = JalilianDataset(args.data, "II", size=args.size, augment=False)
+    train_ds = JalilianDataset(data, "I", size=args.size, augment=True)
+    val_ds = JalilianDataset(data, "II", size=args.size, augment=False)
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers)
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -13,6 +14,46 @@ from torch.utils.data import Dataset
 
 Vertex = tuple[float, float]
 CORNERS = ("N", "E", "S", "W")
+
+
+def is_vicker_root(path: Path) -> bool:
+    return (path / "DB-I").is_dir() and (path / "exact-masks-I").is_dir()
+
+
+def find_data_root(explicit: Path | None = None) -> Path:
+    """Vicker_Database 위치를 찾는다. 다른 PC에서는 --data 또는 환경변수 VICKER_DATABASE."""
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(Path(explicit))
+    env = os.environ.get("VICKER_DATABASE")
+    if env:
+        candidates.append(Path(env))
+    here = Path(__file__).resolve().parent
+    candidates.extend(
+        [
+            here / "Vicker_Database",
+            here.parent / "Vicker_Database",
+            Path.cwd() / "Vicker_Database",
+            Path.home() / "Downloads" / "Vicker_Database",
+            Path.home() / "Download" / "Vicker_Database",
+            Path(r"C:\Users\seoyu\Downloads\Vicker_Database"),
+        ]
+    )
+    seen: set[Path] = set()
+    for raw in candidates:
+        try:
+            path = raw.expanduser().resolve()
+        except OSError:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        if is_vicker_root(path):
+            return path
+    raise FileNotFoundError(
+        "Vicker_Database 를 찾지 못했습니다. 안에 DB-I 와 exact-masks-I 가 있어야 합니다.\n"
+        '실행 예: python preview.py --data "C:\\Users\\이름\\Downloads\\Vicker_Database"'
+    )
 
 
 def db_dirs(root: Path, split: str) -> tuple[Path, Path]:
