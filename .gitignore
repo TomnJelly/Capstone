@@ -6,6 +6,7 @@ venv/
 .idea/
 .vscode/
 preview/
-weights/*
-!weights/.gitkeep
-!weights/best.pt
+v1/preview/
+v1/weights/*
+!v1/weights/.gitkeep
+!v1/weights/best.pt
