@@ -131,6 +131,16 @@ def enhance_gray(gray: np.ndarray) -> np.ndarray:
     return clahe.apply(gray)
 
 
+def _fill_holes(mask: np.ndarray) -> np.ndarray:
+    if mask[0, 0] != 0:
+        return mask
+    flood = mask.copy()
+    pad = np.zeros((mask.shape[0] + 2, mask.shape[1] + 2), np.uint8)
+    cv2.floodFill(flood, pad, (0, 0), 127)
+    holes = np.where(flood == 0, 255, 0).astype(np.uint8)
+    return cv2.bitwise_or(mask, holes)
+
+
 def clean_mask(mask: np.ndarray) -> np.ndarray:
     """여러 덩어리 중 가운데에 가까운 큰 압흔만 남긴다. v1 1003/1032 대응."""
     binary = (mask > 127).astype(np.uint8)
@@ -152,7 +162,10 @@ def clean_mask(mask: np.ndarray) -> np.ndarray:
         if score > best_score:
             best_score = score
             best_i = i
-    return np.where(labels == best_i, 255, 0).astype(np.uint8)
+    out = np.where(labels == best_i, 255, 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel)
+    return _fill_holes(out)
 
 
 class JalilianSubset(Dataset):
@@ -317,12 +330,12 @@ def _forward_prob(model: nn.Module, gray_resized: np.ndarray, device: torch.devi
 
 
 @torch.no_grad()
-def predict_mask(
+def _predict_prob(
     model: nn.Module,
     gray: np.ndarray,
     size: int,
     device: torch.device,
-    tta: bool = True,
+    tta: bool,
 ) -> np.ndarray:
     h, w = gray.shape[:2]
     inp = cv2.resize(enhance_gray(gray), (size, size), interpolation=cv2.INTER_AREA)
@@ -341,12 +354,58 @@ def predict_mask(
         acc += cv2.flip(pred, -1)
         n += 1.0
         acc /= n
-    pred = (acc > 0.5).astype(np.uint8) * 255
-    pred = cv2.resize(pred, (w, h), interpolation=cv2.INTER_NEAREST)
-    return clean_mask(pred)
+    return cv2.resize(acc.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
 
 
-def vertices_from_mask(mask: np.ndarray) -> dict[str, Vertex] | None:
+def _indent_bbox(mask: np.ndarray, pad_frac: float = 0.38) -> tuple[int, int, int, int] | None:
+    ys, xs = np.where(mask > 127)
+    if len(xs) < 20:
+        return None
+    h, w = mask.shape[:2]
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
+    if max(bw, bh) > 0.58 * min(h, w):
+        return None
+    pad = int(round(pad_frac * max(bw, bh))) + 8
+    x0 = max(0, x0 - pad)
+    y0 = max(0, y0 - pad)
+    x1 = min(w, x1 + pad + 1)
+    y1 = min(h, y1 + pad + 1)
+    if (x1 - x0) < 24 or (y1 - y0) < 24:
+        return None
+    return x0, y0, x1, y1
+
+
+@torch.no_grad()
+def predict_mask(
+    model: nn.Module,
+    gray: np.ndarray,
+    size: int,
+    device: torch.device,
+    tta: bool = True,
+    refine_crop: bool = True,
+) -> np.ndarray:
+    h, w = gray.shape[:2]
+    acc = _predict_prob(model, gray, size, device, tta)
+    pred = clean_mask((acc > 0.5).astype(np.uint8) * 255)
+    if not refine_crop:
+        return pred
+    box = _indent_bbox(pred)
+    if box is None:
+        return pred
+    x0, y0, x1, y1 = box
+    crop = gray[y0:y1, x0:x1]
+    crop_acc = _predict_prob(model, crop, size, device, tta)
+    crop_mask = clean_mask((crop_acc > 0.5).astype(np.uint8) * 255)
+    if int((crop_mask > 127).sum()) < 20:
+        return pred
+    out = np.zeros((h, w), np.uint8)
+    out[y0:y1, x0:x1] = crop_mask
+    return clean_mask(out)
+
+
+def _contour_points(mask: np.ndarray) -> np.ndarray | None:
     cleaned = clean_mask(mask)
     contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
@@ -355,13 +414,215 @@ def vertices_from_mask(mask: np.ndarray) -> dict[str, Vertex] | None:
     if cv2.contourArea(cnt) < 20:
         return None
     hull = cv2.convexHull(cnt).reshape(-1, 2)
-    pts = hull if len(hull) >= 4 else cnt.reshape(-1, 2)
+    return hull if len(hull) >= 4 else cnt.reshape(-1, 2).astype(np.float32)
+
+
+def _extrema_from_pts(pts: np.ndarray) -> dict[str, Vertex]:
+    pts = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
     return {
         "N": (float(pts[np.argmin(pts[:, 1]), 0]), float(pts[np.argmin(pts[:, 1]), 1])),
         "E": (float(pts[np.argmax(pts[:, 0]), 0]), float(pts[np.argmax(pts[:, 0]), 1])),
         "S": (float(pts[np.argmax(pts[:, 1]), 0]), float(pts[np.argmax(pts[:, 1]), 1])),
         "W": (float(pts[np.argmin(pts[:, 0]), 0]), float(pts[np.argmin(pts[:, 0]), 1])),
     }
+
+
+def _seg_dist(p: np.ndarray, a: Vertex, b: Vertex) -> float:
+    ax, ay = a
+    bx, by = b
+    px, py = float(p[0]), float(p[1])
+    vx, vy = bx - ax, by - ay
+    den = vx * vx + vy * vy
+    if den < 1e-9:
+        return float(np.hypot(px - ax, py - ay))
+    t = ((px - ax) * vx + (py - ay) * vy) / den
+    t = min(1.0, max(0.0, t))
+    return float(np.hypot(px - (ax + t * vx), py - (ay + t * vy)))
+
+
+def _fit_line(pts: np.ndarray) -> tuple[float, float, float] | None:
+    pts = np.asarray(pts, dtype=np.float32).reshape(-1, 2)
+    if len(pts) < 4:
+        return None
+    line = cv2.fitLine(pts.reshape(-1, 1, 2), cv2.DIST_L2, 0, 0.01, 0.01)
+    vx, vy, x0, y0 = [float(v) for v in np.asarray(line).reshape(-1)]
+    a, b = vy, -vx
+    nrm = float(np.hypot(a, b))
+    if nrm < 1e-9:
+        return None
+    a, b = a / nrm, b / nrm
+    c = -(a * x0 + b * y0)
+    dist = np.abs(a * pts[:, 0] + b * pts[:, 1] + c)
+    keep = dist <= max(1.25, float(np.median(dist)) * 2.8)
+    if int(keep.sum()) >= 4 and int(keep.sum()) < len(pts):
+        pts = pts[keep]
+        line = cv2.fitLine(pts.reshape(-1, 1, 2), cv2.DIST_L2, 0, 0.01, 0.01)
+        vx, vy, x0, y0 = [float(v) for v in np.asarray(line).reshape(-1)]
+        a, b = vy, -vx
+        nrm = float(np.hypot(a, b))
+        if nrm < 1e-9:
+            return None
+        a, b = a / nrm, b / nrm
+        c = -(a * x0 + b * y0)
+    return a, b, c
+
+
+def _intersect_lines(
+    l1: tuple[float, float, float], l2: tuple[float, float, float]
+) -> Vertex | None:
+    a1, b1, c1 = l1
+    a2, b2, c2 = l2
+    det = a1 * b2 - a2 * b1
+    if abs(det) < 1e-9:
+        return None
+    x = (b1 * c2 - b2 * c1) / det
+    y = (c1 * a2 - c2 * a1) / det
+    if not np.isfinite(x) or not np.isfinite(y):
+        return None
+    return float(x), float(y)
+
+
+def _sample_bilinear(img: np.ndarray, x: float, y: float) -> float:
+    h, w = img.shape[:2]
+    if x < 0 or y < 0 or x > w - 1 or y > h - 1:
+        return 0.0
+    x0 = int(np.floor(x))
+    y0 = int(np.floor(y))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    ax = x - x0
+    ay = y - y0
+    v00 = float(img[y0, x0])
+    v01 = float(img[y0, x1])
+    v10 = float(img[y1, x0])
+    v11 = float(img[y1, x1])
+    return (1.0 - ay) * ((1.0 - ax) * v00 + ax * v01) + ay * ((1.0 - ax) * v10 + ax * v11)
+
+
+def _quad_offset(vals: list[float], i: int) -> float:
+    if i <= 0 or i >= len(vals) - 1:
+        return float(i)
+    left, mid, right = vals[i - 1], vals[i], vals[i + 1]
+    den = left - 2.0 * mid + right
+    if abs(den) < 1e-6:
+        return float(i)
+    return float(i) + 0.5 * (left - right) / den
+
+
+def _edge_mag(gray: np.ndarray) -> np.ndarray:
+    g = enhance_gray(gray)
+    gx = cv2.Scharr(g, cv2.CV_32F, 1, 0)
+    gy = cv2.Scharr(g, cv2.CV_32F, 0, 1)
+    mag = cv2.magnitude(gx, gy)
+    scale = float(np.percentile(mag, 99.5)) + 1e-6
+    return mag / scale
+
+
+def _snap_side_to_edge(
+    mag: np.ndarray,
+    a: Vertex,
+    b: Vertex,
+    search: int,
+) -> np.ndarray | None:
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    length = float(np.hypot(dx, dy))
+    if length < 8:
+        return None
+    tx, ty = dx / length, dy / length
+    nx, ny = -ty, tx
+    n_samples = max(18, int(round(length)))
+    snapped: list[tuple[float, float]] = []
+    for i in range(n_samples):
+        t = (i + 0.5) / n_samples
+        if t < 0.12 or t > 0.88:
+            continue
+        x = a[0] + t * dx
+        y = a[1] + t * dy
+        vals = [
+            _sample_bilinear(mag, x + s * nx, y + s * ny) for s in range(-search, search + 1)
+        ]
+        peak = int(np.argmax(vals))
+        if vals[peak] < 0.08:
+            continue
+        off = _quad_offset(vals, peak) - search
+        snapped.append((x + off * nx, y + off * ny))
+    if len(snapped) < 6:
+        return None
+    return np.asarray(snapped, dtype=np.float32)
+
+
+def _side_points(contour: np.ndarray, coarse: dict[str, Vertex]) -> dict[str, np.ndarray]:
+    names = (("NE", "N", "E"), ("ES", "E", "S"), ("SW", "S", "W"), ("WN", "W", "N"))
+    buckets: dict[str, list[np.ndarray]] = {k: [] for k, _, _ in names}
+    _, _, diag = diagonals_px(coarse)
+    max_dist = max(6.0, 0.08 * diag)
+    for p in contour:
+        best = None
+        best_d = max_dist
+        for name, u, v in names:
+            d = _seg_dist(p, coarse[u], coarse[v])
+            if d < best_d:
+                best_d = d
+                best = name
+        if best is not None:
+            buckets[best].append(p)
+    return {k: np.asarray(v, dtype=np.float32) for k, v in buckets.items() if len(v) >= 4}
+
+
+def vertices_from_mask(
+    mask: np.ndarray,
+    gray: np.ndarray | None = None,
+) -> dict[str, Vertex] | None:
+    """마스크로 마름모를 잡고, 있으면 Scharr 에지에 서브픽셀로 붙인다."""
+    contour = _contour_points(mask)
+    if contour is None:
+        return None
+    coarse = _extrema_from_pts(contour)
+    sides = _side_points(contour, coarse)
+    mag = _edge_mag(gray) if gray is not None else None
+    _, _, diag = diagonals_px(coarse)
+    search = int(max(3, min(9, round(0.045 * diag))))
+    lines: dict[str, tuple[float, float, float]] = {}
+    for name, u, v in (("NE", "N", "E"), ("ES", "E", "S"), ("SW", "S", "W"), ("WN", "W", "N")):
+        pts = None
+        if mag is not None:
+            pts = _snap_side_to_edge(mag, coarse[u], coarse[v], search)
+        if pts is None:
+            pts = sides.get(name)
+        if pts is None:
+            pts = np.asarray([coarse[u], coarse[v]], dtype=np.float32)
+        fitted = _fit_line(pts)
+        if fitted is None:
+            ax, ay = coarse[u]
+            bx, by = coarse[v]
+            a, b = by - ay, ax - bx
+            nrm = float(np.hypot(a, b))
+            if nrm < 1e-9:
+                continue
+            a, b = a / nrm, b / nrm
+            fitted = (a, b, -(a * ax + b * ay))
+        lines[name] = fitted
+    if len(lines) < 4:
+        return coarse
+    refined = {
+        "N": _intersect_lines(lines["WN"], lines["NE"]),
+        "E": _intersect_lines(lines["NE"], lines["ES"]),
+        "S": _intersect_lines(lines["ES"], lines["SW"]),
+        "W": _intersect_lines(lines["SW"], lines["WN"]),
+    }
+    limit = max(6.0, 0.12 * diag)
+    out: dict[str, Vertex] = {}
+    for key in CORNERS:
+        pt = refined[key]
+        if pt is None:
+            out[key] = coarse[key]
+            continue
+        if np.hypot(pt[0] - coarse[key][0], pt[1] - coarse[key][1]) > limit:
+            out[key] = coarse[key]
+            continue
+        out[key] = pt
+    return out
 
 
 def diagonals_px(verts: dict[str, Vertex]) -> tuple[float, float, float]:
@@ -384,7 +645,7 @@ def draw_geometry(gray: np.ndarray, verts: dict[str, Vertex] | None, color: tupl
     if verts is None:
         cv2.putText(vis, "no contour", (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 2)
         return vis
-    pts = [tuple(map(int, verts[k])) for k in CORNERS]
+    pts = [(int(round(verts[k][0])), int(round(verts[k][1]))) for k in CORNERS]
     cv2.line(vis, pts[0], pts[2], color, 2, cv2.LINE_AA)
     cv2.line(vis, pts[1], pts[3], color, 2, cv2.LINE_AA)
     for key, pt in zip(CORNERS, pts):
@@ -394,7 +655,6 @@ def draw_geometry(gray: np.ndarray, verts: dict[str, Vertex] | None, color: tupl
     text = f"d1={d1:.1f}px  d2={d2:.1f}px  mean={dmean:.1f}px"
     cv2.putText(vis, text, (20, vis.shape[0] - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
     return vis
-
 
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
@@ -426,14 +686,14 @@ def val_report(
     for stem in ids:
         gray = load_gray(img_dir / f"{stem}.png")
         gt = load_mask(mask_dir / f"{stem}.png")
-        pred = predict_mask(model, gray, size, device, tta=tta)
+        pred = predict_mask(model, gray, size, device, tta=tta, refine_crop=tta)
         p = pred > 127
         g = gt > 127
         den = int(p.sum() + g.sum())
         dice = float(2 * np.logical_and(p, g).sum() / den) if den else 0.0
         dices.append(dice)
-        gv = vertices_from_mask(gt)
-        pv = vertices_from_mask(pred)
+        gv = vertices_from_mask(gt, gray)
+        pv = vertices_from_mask(pred, gray)
         if gv is not None and pv is not None:
             _, _, dg = diagonals_px(gv)
             _, _, dp = diagonals_px(pv)
@@ -656,9 +916,9 @@ def write_kaggle_previews(model, data, db, ids, size, device):
         gray = load_gray(img_dir / f"{stem}.png")
         gt = load_mask(mask_dir / f"{stem}.png")
         pred = predict_mask(model, gray, size, device, tta=True)
-        left = draw_geometry(overlay_mask(gray, gt), vertices_from_mask(gt), (46, 204, 113))
+        left = draw_geometry(overlay_mask(gray, gt), vertices_from_mask(gt, gray), (46, 204, 113))
         right = draw_geometry(
-            overlay_mask(gray, pred, (230, 126, 34)), vertices_from_mask(pred), (230, 126, 34)
+            overlay_mask(gray, pred, (230, 126, 34)), vertices_from_mask(pred, gray), (230, 126, 34)
         )
         gap = np.full((left.shape[0], 8, 3), 40, dtype=np.uint8)
         rgb = cv2.cvtColor(np.hstack([left, gap, right]), cv2.COLOR_BGR2RGB)

@@ -46,12 +46,12 @@ STEPS_GT = [
     ("01_input.png", "1. 입력 이미지", "시험기 현미경 흑백 사진. 모델의 입력입니다."),
     ("02_gt_mask.png", "2. 정답 마스크", "사람이 칠한 압흔 영역. 학습 타깃입니다."),
     ("03_gt_overlay.png", "3. 입력 + 정답", "초록이 정답 압흔입니다."),
-    ("04_gt_geom.png", "4. 정답 기하", "정답 마스크에서 뽑은 N/E/S/W와 대각선."),
+    ("04_gt_geom.png", "4. 정답 기하", "정답 마스크+에지로 뽑은 N/E/S/W와 대각선."),
 ]
 
 STEPS_PRED = [
     ("05_pred_mask.png", "5. 모델 예측 마스크", "U-Net이 예측한 압흔 영역."),
-    ("06_pred_geom.png", "6. 예측 기하", "예측 마스크에서 뽑은 꼭짓점. 초록=정답, 주황=예측."),
+    ("06_pred_geom.png", "6. 예측 기하", "에지 서브픽셀 꼭짓점. 초록=정답, 주황=예측."),
 ]
 
 GOOD_MAX = 0.03
@@ -182,7 +182,7 @@ def save_steps(
 ) -> dict:
     dest.mkdir(parents=True, exist_ok=True)
     if gt_verts is None:
-        gt_verts = vertices_from_mask(gt)
+        gt_verts = vertices_from_mask(gt, gray)
     cv2.imwrite(str(dest / "01_input.png"), gray)
     cv2.imwrite(str(dest / "02_gt_mask.png"), gt)
     cv2.imwrite(str(dest / "03_gt_overlay.png"), overlay_mask(gray, gt, (46, 204, 113)))
@@ -191,7 +191,7 @@ def save_steps(
     has_pred = pred is not None
     if has_pred and pred is not None:
         if pred_verts is None:
-            pred_verts = vertices_from_mask(pred)
+            pred_verts = vertices_from_mask(pred, gray)
         cv2.imwrite(str(dest / "05_pred_mask.png"), overlay_mask(gray, pred, (231, 76, 60)))
         pred_vis = draw_geometry(gray, pred_verts, (0, 70, 255))
         if gt_verts is not None:
@@ -536,8 +536,8 @@ def main() -> None:
         pred_verts = None
         if model is not None:
             pred = predict_mask(model, gray, size, device)
-            pred_verts = vertices_from_mask(pred)
-        gt_verts = vertices_from_mask(gt)
+            pred_verts = vertices_from_mask(pred, gray)
+        gt_verts = vertices_from_mask(gt, gray)
         metrics = sample_metrics(gt, pred, gt_verts, pred_verts)
         dest = args.out / "samples" / stem
         save_steps(

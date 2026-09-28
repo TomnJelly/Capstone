@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v2 학습. DB-I / DB-II 각각 70% 학습, 30% 검증. GitHub에 올리지 말 것."""
+"""v2 학습. DB-I / DB-II 각각 70% 학습, 30% 검증."""
 
 from __future__ import annotations
 
@@ -77,14 +77,14 @@ def val_report(
     for stem in ids:
         gray = load_gray(img_dir / f"{stem}.png")
         gt = load_mask(mask_dir / f"{stem}.png")
-        pred = predict_mask(model, gray, size, device, tta=tta)
+        pred = predict_mask(model, gray, size, device, tta=tta, refine_crop=tta)
         p = pred > 127
         g = gt > 127
         den = int(p.sum() + g.sum())
         dice = float(2 * np.logical_and(p, g).sum() / den) if den else 0.0
         dices.append(dice)
-        gv = vertices_from_mask(gt)
-        pv = vertices_from_mask(pred)
+        gv = vertices_from_mask(gt, gray)
+        pv = vertices_from_mask(pred, gray)
         if gv is not None and pv is not None:
             _, _, dg = diagonals_px(gv)
             _, _, dp = diagonals_px(pv)
