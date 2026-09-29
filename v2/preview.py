@@ -51,7 +51,7 @@ STEPS_GT = [
 
 STEPS_PRED = [
     ("05_pred_mask.png", "5. 모델 예측 마스크", "U-Net이 예측한 압흔 영역."),
-    ("06_pred_geom.png", "6. 예측 기하", "에지 서브픽셀 꼭짓점. 초록=정답, 주황=예측."),
+    ("06_pred_geom.png", "6. 예측 기하", "에지 서브픽셀 꼭짓점. 초록=정답 마스크, 주황=예측."),
 ]
 
 GOOD_MAX = 0.03
@@ -303,7 +303,13 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
     .grid {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }}
     .stage {{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; }}
     .stage h2 {{ margin:0 0 8px; font-size:16px; }}
-    .stage img {{ width:100%; background:#000; border-radius:8px; display:block; }}
+    .stage img {{ width:100%; background:#000; border-radius:8px; display:block; cursor:zoom-in; }}
+    .zoom {{ position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+      flex-direction:column; gap:10px; background:rgba(0,0,0,.88); z-index:80; padding:20px; cursor:zoom-out; }}
+    .zoom.on {{ display:flex; }}
+    .zoom img {{ max-width:min(96vw, 1600px); max-height:calc(100vh - 72px); object-fit:contain;
+      background:#000; border-radius:8px; cursor:zoom-out; }}
+    .zoom .cap {{ color:var(--text); font-size:16px; }}
   </style>
 </head>
 <body>
@@ -315,7 +321,7 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
       <span><i class="dot" style="background:var(--good)"></i>좋음 &lt;3%</span>
       <span><i class="dot" style="background:var(--ok)"></i>보통 3–8%</span>
       <span><i class="dot" style="background:var(--bad)"></i>나쁨 ≥8%</span>
-      <span>경도는 대각선 제곱에 반비례해서, 오차 8%면 경도는 대략 16% 흔들립니다.</span>
+      <span>왼쪽 %는 정답 마스크에서 뽑은 대각선(픽셀)과 비교입니다. Dice는 마스크 겹침입니다. 사진 클릭하면 확대됩니다.</span>
     </div>
   </header>
   <div class="layout">
@@ -331,11 +337,35 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
       <div class="grid" id="stages"></div>
     </main>
   </div>
+  <div class="zoom" id="zoom">
+    <div class="cap" id="zoomcap"></div>
+    <img id="zoomimg" alt="" />
+  </div>
   <script>
     const DATA = {payload};
     let idx = 0;
     let order = DATA.items.map((_, i) => i);
     let worstFirst = false;
+    const zoomEl = document.getElementById("zoom");
+    const zoomImg = document.getElementById("zoomimg");
+    const zoomCap = document.getElementById("zoomcap");
+    let zoomOpen = false;
+    function closeZoom() {{
+      zoomOpen = false;
+      zoomEl.classList.remove("on");
+    }}
+    function toggleZoom(src, title) {{
+      if (zoomOpen && zoomImg.getAttribute("data-src") === src) {{
+        closeZoom();
+        return;
+      }}
+      zoomOpen = true;
+      zoomEl.classList.add("on");
+      zoomImg.src = src;
+      zoomImg.setAttribute("data-src", src);
+      zoomCap.textContent = title + " · 다시 클릭하면 닫힘";
+    }}
+    zoomEl.addEventListener("click", () => closeZoom());
     function pct(x) {{
       if (x === null || x === undefined) return "—";
       return (100 * x).toFixed(1) + "%";
@@ -355,6 +385,7 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
       const subsetKo = subset === "val" ? "검증 30%" : (subset === "train" ? "학습 70%" : "전체");
       bits.push(subsetKo + " " + DATA.items.length + "장");
       if (s.train_n && s.val_n) bits.push("분할 " + s.train_n + "/" + s.val_n);
+      bits.push("점수: 정답 마스크 대각선(픽셀, 같은 서브픽셀)");
       document.getElementById("ckptline").textContent = bits.join(" · ");
       const mean = pct(s.mean_diag);
       const med = pct(s.median_diag);
@@ -365,7 +396,7 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
         return `<div class="barwrap"><div class="bar g${{i}}" style="height:${{hpx}}px"></div><span>${{h.label}} ${{h.n}}</span></div>`;
       }}).join("");
       document.getElementById("stats").innerHTML = `
-        <div class="stat"><div class="k">평균 대각선 오차</div><div class="v">${{mean}}</div><div class="hint">중간값 ${{med}}</div></div>
+        <div class="stat"><div class="k">평균 대각선 오차</div><div class="v">${{mean}}</div><div class="hint">정답 마스크 대비 중간값 ${{med}}</div></div>
         <div class="stat"><div class="k">평균 Dice</div><div class="v">${{diceTxt(s.mean_dice)}}</div><div class="hint">마스크가 정답과 겹친 정도</div></div>
         <div class="stat"><div class="k">장 수</div><div class="v">${{s.n_good}} / ${{s.n_ok}} / ${{s.n_bad}}</div><div class="hint">좋음 / 보통 / 나쁨</div></div>
         <div class="stat"><div class="k">오차 분포</div><div class="bars">${{bars}}</div></div>
@@ -397,6 +428,8 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
         const el = document.createElement("section");
         el.className = "stage";
         el.innerHTML = `<h2>${{title}}</h2><img src="samples/${{it.id}}/${{file}}?v=${{DATA.bust}}" alt="${{title}}" />`;
+        const img = el.querySelector("img");
+        img.onclick = () => toggleZoom(img.src, title);
         box.appendChild(el);
       }});
     }}
@@ -413,6 +446,7 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
       }}
     }}
     function render() {{
+      if (zoomOpen) closeZoom();
       renderStats();
       renderNav();
       renderMain();
@@ -423,6 +457,10 @@ def write_html(out: Path, items: list[dict], has_model: bool, summary: dict, bus
       render();
     }};
     document.addEventListener("keydown", (e) => {{
+      if (e.key === "Escape" && zoomOpen) {{
+        closeZoom();
+        return;
+      }}
       const pos = order.indexOf(idx);
       if (e.key === "ArrowDown" || e.key === "ArrowRight") {{
         idx = order[Math.min(order.length - 1, pos + 1)];

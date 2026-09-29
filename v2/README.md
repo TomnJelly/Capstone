@@ -18,7 +18,15 @@ cd v2
 python preview.py --data "C:\Users\이름\Downloads\Vicker_Database"
 ```
 
-기본은 **검증 30%**만 보여줍니다. 잠시 기다리면 터미널에 `미리보기 사이트: http://127.0.0.1:8766/` 가 뜹니다. 안 열리면 그 주소를 주소창에 직접 넣으세요. 끄려면 `Ctrl+C`.
+미리보기 왼쪽 %는 **정답 마스크 대각선(픽셀)** 과 비교합니다. 정답·예측 둘 다 같은 에지 서브픽셀을 씁니다. 잠시 기다리면 `미리보기 사이트: http://127.0.0.1:8766/` 가 뜹니다.
+
+사진만 올려서 예측만 보려면:
+
+```bash
+python upload.py
+```
+
+`http://127.0.0.1:8767/` 에서 파일을 고르고 예측을 누르면 됩니다. 정답 마스크는 없습니다.
 
 DB-II:
 
@@ -66,6 +74,7 @@ python train.py
 | `common.py` | 데이터, U-Net, 마스크→꼭짓점 |
 | `train.py` | 로컬 학습 |
 | `preview.py` | 미리보기 사이트 (기본: 검증 30%) |
+| `upload.py` | 사진 업로드 → 예측 마스크·꼭짓점 |
 | `weights/best_I.pt` | DB-I 모델 |
 | `weights/best_II.pt` | DB-II 모델 |
 | `splits/` | seed 42, 70/30 목록 |
